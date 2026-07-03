@@ -99,7 +99,8 @@ pub fn layout_qt_matches_fresh_qt(layout: &Layout) -> bool {
     let container = &layout.container;
     let mut fresh_cde = container.base_cde.as_ref().clone();
     for (pk, pi) in &layout.placed_items {
-        let hazard = Hazard::new((pk, pi).into(), pi.shape.clone(), true);
+        let hazard = Hazard::new((pk, pi).into(), pi.shape.clone(), true)
+            .with_holes(pi.holes.clone());
         fresh_cde.register_hazard(hazard);
     }
 

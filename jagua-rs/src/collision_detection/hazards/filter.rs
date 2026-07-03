@@ -65,6 +65,28 @@ impl HazardFilter for NoFilter {
     }
 }
 
+/// Wraps an inner filter and additionally deems a fixed set of `HazKey`s as irrelevant.
+/// Used to layer a "candidate is safely contained in a placed item's hole" mask on top
+/// of the caller's existing filter.
+#[derive(Clone, Debug)]
+pub struct LayeredFilter<'a, F: HazardFilter> {
+    pub inner: &'a F,
+    pub extra: SecondaryMap<HazKey, ()>,
+}
+
+impl<'a, F: HazardFilter> LayeredFilter<'a, F> {
+    #[must_use]
+    pub fn new(inner: &'a F, extra: SecondaryMap<HazKey, ()>) -> Self {
+        Self { inner, extra }
+    }
+}
+
+impl<'a, F: HazardFilter> HazardFilter for LayeredFilter<'a, F> {
+    fn is_irrelevant(&self, haz_key: HazKey) -> bool {
+        self.extra.contains_key(haz_key) || self.inner.is_irrelevant(haz_key)
+    }
+}
+
 /// Implements [`HazardFilter`] for any type that implements [`HazardCollector`].
 /// Any [`HazardEntity`]s that are already in the collector are considered irrelevant.
 impl<T> HazardFilter for T

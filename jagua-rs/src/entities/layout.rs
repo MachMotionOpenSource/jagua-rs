@@ -78,7 +78,8 @@ impl Layout {
             .placed_items
             .insert(PlacedItem::new(item, d_transformation));
         let pi = &self.placed_items[pk];
-        let hazard = Hazard::new((pk, pi).into(), pi.shape.clone(), true);
+        let hazard = Hazard::new((pk, pi).into(), pi.shape.clone(), true)
+            .with_holes(pi.holes.clone());
 
         self.cde.register_hazard(hazard);
 
