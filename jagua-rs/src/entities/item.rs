@@ -64,10 +64,14 @@ impl Item {
             shape_int.generate_surrogate(surrogate_config)?;
             Arc::new(shape_int)
         };
+        // A hole narrower than the separation deflates to NOTHING: no part can
+        // sit in it, so it is dropped -- not an import failure. (A part with a
+        // small hole used to fail the whole nest-around-obstacles run:
+        // "Offset resulted in an empty polygon".)
         let holes_cd: Vec<Arc<SPolygon>> = original_holes
             .into_iter()
-            .map(|h| h.convert_to_internal().map(Arc::new))
-            .collect::<Result<_>>()?;
+            .filter_map(|h| h.convert_to_internal().ok().map(Arc::new))
+            .collect();
         Ok(Item {
             id,
             shape_orig,
