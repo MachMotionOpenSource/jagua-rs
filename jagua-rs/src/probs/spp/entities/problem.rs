@@ -32,7 +32,18 @@ impl SPProblem {
 
     /// Modifies the width of the strip in the back, keeping the front fixed.
     pub fn change_strip_width(&mut self, new_width: f32) {
-        self.strip.set_width(new_width);
+        // A width near or below twice the deflation offset (min item
+        // separation) collapses the container polygon when the strip
+        // converts to a Container (Deflate mode) -- "Offset resulted in an
+        // empty polygon" panic. Keep the deflated body at least one offset
+        // wide; the optimizer simply finds that width infeasible and backs
+        // off.
+        let min_w = self
+            .strip
+            .shape_modify_config
+            .offset
+            .map_or(f32::EPSILON, |o| 3.0 * o + 1e-6);
+        self.strip.set_width(new_width.max(min_w));
         self.layout.swap_container(self.strip.into());
     }
 

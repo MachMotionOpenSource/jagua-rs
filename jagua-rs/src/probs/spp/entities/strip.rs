@@ -23,17 +23,28 @@ impl Strip {
     ) -> Result<Self> {
         ensure!(fixed_height > 0.0, "strip height must be positive");
         ensure!(width > 0.0, "strip width must be positive");
-        Ok(Strip {
+        let mut s = Strip {
             fixed_height,
             cde_config,
             shape_modify_config,
             width,
-        })
+        };
+        s.set_width(width);
+        Ok(s)
     }
 
     pub fn set_width(&mut self, width: f32) {
         assert!(width > 0.0, "strip width must be positive");
-        self.width = width;
+        // A width near or below twice the deflation offset (min item
+        // separation) collapses the container polygon on conversion
+        // ("Offset resulted in an empty polygon" panic). Keep the deflated
+        // body at least one offset wide -- narrower strips are infeasible
+        // for any item anyway, so the optimizer just backs off.
+        let min_w = self
+            .shape_modify_config
+            .offset
+            .map_or(f32::EPSILON, |o| 3.0 * o + 1e-6);
+        self.width = width.max(min_w);
     }
 }
 
