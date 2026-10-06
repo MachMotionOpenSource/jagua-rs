@@ -173,19 +173,34 @@ impl CDEngine {
 
             // Check for containment of the shape in any of the hazards
             for qt_hazard in v_qt_root.hazards.iter() {
+                if filter.is_irrelevant(qt_hazard.hkey) {
+                    continue;
+                }
                 match &qt_hazard.presence {
                     QTHazPresence::None => {}
-                    QTHazPresence::Entire => unreachable!(
-                        "Entire hazards in the virtual root should have been caught by the edge intersection tests"
-                    ),
+                    QTHazPresence::Entire => {
+                        // The virtual root is fully inside this hazard's shape (as
+                        // tracked by the quadtree). Normally the shape's edges would
+                        // have caught this above, but when the candidate is entirely
+                        // inside a "hole" of the hazard, no edges fire.
+                        let haz = &self.hazards_map[qt_hazard.hkey];
+                        if !haz.is_candidate_safely_in_hole(shape) {
+                            return true;
+                        }
+                    }
                     QTHazPresence::Partial(_) => {
-                        if !filter.is_irrelevant(qt_hazard.hkey) {
-                            let haz_shape = &self.hazards_map[qt_hazard.hkey].shape;
-                            if self.detect_containment_collision(shape, haz_shape, qt_hazard.entity)
-                            {
-                                // The hazard is contained in the shape (or vice versa)
-                                return true;
-                            }
+                        let haz = &self.hazards_map[qt_hazard.hkey];
+                        // If this hazard has inner safe regions (holes) and the
+                        // candidate is fully contained inside one of them, this
+                        // hazard does not actually collide with the candidate.
+                        if haz.is_candidate_safely_in_hole(shape) {
+                            continue;
+                        }
+                        let haz_shape = &haz.shape;
+                        if self.detect_containment_collision(shape, haz_shape, qt_hazard.entity)
+                        {
+                            // The hazard is contained in the shape (or vice versa)
+                            return true;
                         }
                     }
                 }
@@ -276,18 +291,50 @@ impl CDEngine {
 
         //Check if there are any other collisions due to containment
         for qt_haz in v_quadtree.hazards.iter() {
+            if collector.contains_key(qt_haz.hkey) {
+                continue;
+            }
             match &qt_haz.presence {
-                // No need to check these, guaranteed to be detected by edge intersection
-                QTHazPresence::None | QTHazPresence::Entire => {}
+                QTHazPresence::None => {}
+                QTHazPresence::Entire => {
+                    // Virtual root fully inside this hazard. Edges won't fire when
+                    // the candidate is interior. If the candidate sits inside one of
+                    // the hazard's holes the collision is spurious and we skip it.
+                    let haz = &self.hazards_map[qt_haz.hkey];
+                    if !haz.is_candidate_safely_in_hole(shape) {
+                        collector.insert(qt_haz.hkey, qt_haz.entity);
+                    }
+                }
                 QTHazPresence::Partial(_) => {
-                    if !collector.contains_key(qt_haz.hkey) {
-                        let h_shape = &self.hazards_map[qt_haz.hkey].shape;
-                        if self.detect_containment_collision(shape, h_shape, qt_haz.entity) {
-                            collector.insert(qt_haz.hkey, qt_haz.entity);
-                        }
+                    let haz = &self.hazards_map[qt_haz.hkey];
+                    if haz.is_candidate_safely_in_hole(shape) {
+                        continue;
+                    }
+                    let h_shape = &haz.shape;
+                    if self.detect_containment_collision(shape, h_shape, qt_haz.entity) {
+                        collector.insert(qt_haz.hkey, qt_haz.entity);
                     }
                 }
             }
+        }
+
+        // Sweep: some hazards may have been inserted earlier via per-edge/pole
+        // quadtree leaves marked `QTHazPresence::Entire`, which are inserted
+        // unconditionally with no knowledge of holes. Remove any such entries
+        // that turn out to be hole-safe for this candidate.
+        let to_remove: Vec<HazKey> = collector
+            .iter()
+            .filter_map(|(hk, _)| {
+                let haz = &self.hazards_map[hk];
+                if !haz.holes.is_empty() && haz.is_candidate_safely_in_hole(shape) {
+                    Some(hk)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for hk in to_remove {
+            collector.remove_by_key(hk);
         }
     }
 
@@ -344,6 +391,29 @@ impl CDEngine {
                 _ => false,
             })
             .map(|(key, _)| key)
+    }
+
+    /// Returns the set of `HazKey`s of hazards whose holes fully contain the given candidate
+    /// shape. Hazards in this set should be treated as irrelevant for `candidate` because the
+    /// candidate is inside a "safe" inner region (e.g. an item hole) of that hazard.
+    ///
+    /// Only hazards that actually carry holes are inspected, so the cost is `O(items_with_holes)`
+    /// containment checks, each gated on a cheap bounding-box test.
+    #[must_use]
+    pub fn hole_safe_hkeys(
+        &self,
+        candidate: &SPolygon,
+    ) -> slotmap::SecondaryMap<HazKey, ()> {
+        let mut map = slotmap::SecondaryMap::new();
+        for (hkey, hazard) in self.hazards_map.iter() {
+            if hazard.holes.is_empty() {
+                continue;
+            }
+            if hazard.is_candidate_safely_in_hole(candidate) {
+                map.insert(hkey, ());
+            }
+        }
+        map
     }
 }
 

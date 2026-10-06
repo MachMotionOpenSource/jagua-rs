@@ -10,7 +10,7 @@ use crate::io::ext_repr::{ExtContainer, ExtItem, ExtSPolygon, ExtShape};
 use anyhow::{Result, bail};
 use float_cmp::approx_eq;
 use itertools::Itertools;
-use log::{debug, warn};
+use log::debug;
 
 /// Converts external representations of items and containers into internal ones.
 #[derive(Clone, Debug, Copy)]
@@ -46,33 +46,53 @@ impl Importer {
     pub fn import_item(&self, ext_item: &ExtItem) -> Result<Item> {
         debug!("[IMPORT] starting item {:?}", ext_item.id);
 
-        let original_shape = {
-            let shape = match &ext_item.shape {
-                ExtShape::Rectangle {
-                    x_min,
-                    y_min,
-                    width,
-                    height,
-                } => {
-                    let rect = Rect::try_new(*x_min, *y_min, x_min + width, y_min + height)?;
-                    SPolygon::from(rect)
-                }
-                ExtShape::SimplePolygon(esp) => import_simple_polygon(esp)?,
-                ExtShape::Polygon(ep) => {
-                    warn!("No native support for polygons yet, ignoring the holes");
-                    import_simple_polygon(&ep.outer)?
-                }
-                ExtShape::MultiPolygon(_) => {
-                    bail!("No support for multipolygons yet")
-                }
-            };
-            OriginalShape {
-                pre_transform: centering_transformation(&shape),
-                shape,
-                modify_mode: ShapeModifyMode::Inflate,
-                modify_config: self.shape_modify_config,
+        let (outer_sp, hole_sps): (SPolygon, Vec<SPolygon>) = match &ext_item.shape {
+            ExtShape::Rectangle {
+                x_min,
+                y_min,
+                width,
+                height,
+            } => {
+                let rect = Rect::try_new(*x_min, *y_min, x_min + width, y_min + height)?;
+                (SPolygon::from(rect), vec![])
+            }
+            ExtShape::SimplePolygon(esp) => (import_simple_polygon(esp)?, vec![]),
+            ExtShape::Polygon(ep) => {
+                let outer = import_simple_polygon(&ep.outer)?;
+                let holes = ep
+                    .inner
+                    .iter()
+                    .map(import_simple_polygon)
+                    .collect::<Result<Vec<SPolygon>>>()?;
+                (outer, holes)
+            }
+            ExtShape::MultiPolygon(_) => {
+                bail!("No support for multipolygons yet")
             }
         };
+
+        let pre_transform = centering_transformation(&outer_sp);
+
+        let original_shape = OriginalShape {
+            pre_transform,
+            shape: outer_sp,
+            modify_mode: ShapeModifyMode::Inflate,
+            modify_config: self.shape_modify_config,
+        };
+
+        // Holes share the parent's pre_transform so they stay in the same coordinate frame.
+        // For holes we DEFLATE (shrink) instead of inflate so a candidate must clear the
+        // safety margin inside the hole; this is the symmetric counterpart of the outer
+        // shape inflation used by `min_item_separation`.
+        let original_holes: Vec<OriginalShape> = hole_sps
+            .into_iter()
+            .map(|h| OriginalShape {
+                pre_transform,
+                shape: h,
+                modify_mode: ShapeModifyMode::Deflate,
+                modify_config: self.shape_modify_config,
+            })
+            .collect();
 
         let base_quality = ext_item.min_quality;
 
@@ -87,9 +107,10 @@ impl Importer {
             None => RotationRange::Continuous,
         };
 
-        Item::new(
+        Item::new_with_holes(
             usize::try_from(ext_item.id).unwrap(),
             original_shape,
+            original_holes,
             allowed_orientations,
             base_quality,
             self.cde_config.item_surrogate_config,

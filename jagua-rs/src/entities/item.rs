@@ -15,6 +15,11 @@ pub struct Item {
     pub shape_orig: Arc<OriginalShape>,
     /// Contour of the item to be used for collision detection
     pub shape_cd: Arc<SPolygon>,
+    /// Optional inner "holes" of the item, in the same coordinate space as `shape_cd`
+    /// (i.e. already pre-transformed and converted to internal CD representation).
+    /// A candidate that ends up fully inside one of these holes when this item is placed
+    /// is considered non-colliding with this item.
+    pub holes_cd: Vec<Arc<SPolygon>>,
     /// Allowed rotations in which the item can be placed
     pub allowed_rotation: RotationRange,
     /// The minimum quality the item should be produced out of, if `None` the item requires full quality
@@ -31,16 +36,43 @@ impl Item {
         min_quality: Option<usize>,
         surrogate_config: SPSurrogateConfig,
     ) -> Result<Item> {
+        Self::new_with_holes(
+            id,
+            original_shape,
+            vec![],
+            allowed_rotation,
+            min_quality,
+            surrogate_config,
+        )
+    }
+
+    /// Like [`Item::new`] but also attaches a set of inner holes. Hole shapes must be
+    /// expressed in the same coordinate frame as `original_shape` (they are subject to
+    /// the same `pre_transform`). They are converted to the internal CD representation
+    /// alongside the outer shape.
+    pub fn new_with_holes(
+        id: usize,
+        original_shape: OriginalShape,
+        original_holes: Vec<OriginalShape>,
+        allowed_rotation: RotationRange,
+        min_quality: Option<usize>,
+        surrogate_config: SPSurrogateConfig,
+    ) -> Result<Item> {
         let shape_orig = Arc::new(original_shape);
         let shape_int = {
             let mut shape_int = shape_orig.convert_to_internal()?;
             shape_int.generate_surrogate(surrogate_config)?;
             Arc::new(shape_int)
         };
+        let holes_cd: Vec<Arc<SPolygon>> = original_holes
+            .into_iter()
+            .map(|h| h.convert_to_internal().map(Arc::new))
+            .collect::<Result<_>>()?;
         Ok(Item {
             id,
             shape_orig,
             shape_cd: shape_int,
+            holes_cd,
             allowed_rotation,
             min_quality,
             surrogate_config,
